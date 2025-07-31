@@ -8,7 +8,7 @@ const cookieParser = require('cookie-parser');
 
 
 const app = express();
-const port = 1010;
+const port = process.env.port || 1010;
 
 // 파일 경로
 const USERS_FILE = "./users.json";
@@ -55,10 +55,16 @@ function keySearch(input) {
     return;
 }
 
+async function getUserConfig(email) {
+    const userDB = JSON.parse(await fsp.readFile(USERS_FILE, "utf-8"));
+  return userDB.find(user => user.email === email);
+}
+
 
 app.listen(port, () => {
     console.log("localhost:" + port);
 });
+
 // 템플릿 감싸는 미들웨어
 app.use((req, res, next) => {
     const originalSend = res.send;
@@ -320,27 +326,54 @@ app.get("/sendEmailForm", (req, res) => {
         </form>`);
 });
 
+const nodemailer = require("nodemailer");
+
 app.post("/sendEmail", async (req, res) => {
-    const { to, subject, body } = req.body;
-    const email = req.cookies.email;
-    const key = req.session.key;
-    if (!keySearch(key) == email) {
-        console.log("보안 문제 발생!!!!!");
-        // res.redirect("/sendEmailForm")
-    }
-    const form = email;
-    // const password = req.cookies('password');
-    if ( !to || !subject || !body) return res.status(400).json({ error: "입력 누락" });
-    const emailObj = { form, to, subject, body, time: new Date().toISOString() };
+  const { to, subject, body } = req.body;
+  const email = req.cookies.email;
+  const key = req.session.key;
+
+//   if (!keySearch(key) == email) {
+    // console.log("보안 문제 발생!!!!!");
+    // return res.status(401).send("인증 오류");
+//   }
+
+  if (!to || !subject || !body)
+    return res.status(400).json({ error: "입력 누락" });
+
+  const emailObj = { form: email, to, subject, body, time: new Date().toISOString() };
+
+  try {
+    // 저장
+    let emails = [];
     try {
-        let emails = [];
-        try {
-            emails = JSON.parse(await fsp.readFile(EMAILS_FILE, "utf-8"));
-        } catch { emails = []; }
-        emails.push(emailObj);
-        await fsp.writeFile(EMAILS_FILE, JSON.stringify(emails, null, 2));
-        res.send("<h1>이메일 전송 완료!</h1><a href='/'>돌아가기</a>");
-    } catch {
-        res.status(500).json({ error: "이메일 저장 오류" });
-    }
+      emails = JSON.parse(await fsp.readFile(EMAILS_FILE, "utf-8"));
+    } catch { emails = []; }
+    emails.push(emailObj);
+    await fsp.writeFile(EMAILS_FILE, JSON.stringify(emails, null, 2));
+
+    // 다음 메일 전송
+    const creds = getUserConfig(email);
+    const transporter = nodemailer.createTransport({
+      host: creds.smtp.host,
+      port: creds.smtp.port,
+      secure: creds.smtp.secure,
+      auth: {
+        user: creds.email,
+        pass: creds.password
+      }
+    });
+
+    await transporter.sendMail({
+      from: creds.email,
+      to,
+      subject,
+      text: body
+    });
+
+    res.send("<h1>이메일 전송 완료! (저장+발송)</h1><a href='/'>돌아가기</a>");
+  } catch (err) {
+    console.log("에러:", err);
+    res.status(500).json({ error: "이메일 처리 오류" });
+  }
 });
